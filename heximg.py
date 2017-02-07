@@ -123,15 +123,26 @@ class HexImg(QMainWindow):
         self.scale.setSingleStep(1)
         self.scale.valueChanged.connect(self.update_image)
 
-        self.width = QSpinBox()
-        self.width.setRange(8, 512)
-        self.width.setSingleStep(1)
-        self.width.valueChanged.connect(self.update_image)
+        self.width_s = QSpinBox()
+        self.width_s.setRange(8, 512)
+        self.width_s.setSingleStep(1)
+        self.width_s.valueChanged.connect(self.update_image)
+
+        self.height_s = QSpinBox()
+        self.height_s.setRange(16, 32727)
+        self.height_s.setSingleStep(1)
+        self.height_s.setValue(32727)
+        self.height_s.valueChanged.connect(self.update_image)
+
+        self.endian = QCheckBox()
+        self.endian.stateChanged.connect(self.update_image)
 
         sideform.addRow('Offset', self.address_offset)
-        sideform.addRow('Width', self.width)
+        sideform.addRow('Width', self.width_s)
+        sideform.addRow('Height', self.height_s)
         sideform.addRow('Color bits', self.pixel_size)
         sideform.addRow('Scale', self.scale)
+        sideform.addRow('Flip endian', self.endian)
         sidebar.addLayout(sideform)
 
         self.colors = []
@@ -179,12 +190,12 @@ class HexImg(QMainWindow):
         scale = int(self.scale.value())
         length = len(self.ROM) - offset
         px_length = px_per_byte * length
-        width = int(self.width.value())
+        width = int(self.width_s.value())
         # Maximum height for QPixmap is 32,767
         height_1 = -(-px_length // width)  # Reverse floor division for ceil
-        columns = -(-(height_1 * scale) // 32767)
+        columns = -(-(height_1 * scale) // int(self.height_s.value()))
         height = -(-height_1 // columns)
-        col_length = -(-length // columns)
+        col_length = height * width // px_per_byte  # -(-length // columns)
 
         layout = self.main_area.layout()
 
@@ -230,14 +241,24 @@ class HexImg(QMainWindow):
         ucharptr.setsize(img.byteCount())
 
         ptr = 0
-        for i in byterange:
-            # Need to read part of each byte depending on palette size
-            byte = self.ROM[i]
-            for j in range(px_per_byte):
-                offset = 8 - (j+1)*bx
-                bits = byte >> offset & bxm
-                ucharptr[ptr] = struct.pack('B', bits)
-                ptr += 1
+        if self.endian.isChecked():
+            for i in byterange:
+                # Need to read part of each byte depending on palette size
+                byte = self.ROM[i]
+                for j in range(px_per_byte):
+                    offset = j*bx
+                    bits = byte >> offset & bxm
+                    ucharptr[ptr] = struct.pack('B', bits)
+                    ptr += 1
+        else:
+            for i in byterange:
+                # Need to read part of each byte depending on palette size
+                byte = self.ROM[i]
+                for j in reversed(range(px_per_byte)):
+                    offset = j*bx
+                    bits = byte >> offset & bxm
+                    ucharptr[ptr] = struct.pack('B', bits)
+                    ptr += 1
         return img
 
     def s_color_picker(self, key):
@@ -260,3 +281,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
