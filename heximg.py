@@ -118,7 +118,7 @@ class HexImg(QMainWindow):
 
         self.address_offset = SpinBox(0, 1000000000, step=64, func=self.update_image)
         self.address_fine_offset = SpinBox(0, 1023, func=self.update_image)
-        self.image_length = SpinBox(16, 16384, init=1024, step=16, func=self.update_image)
+        self.image_length = SpinBox(16, 65536, init=1024, step=16, func=self.update_image)
         self.scale = SpinBox(1, 32, init=8, step=1, func=self.update_image_lite)
         self.width_s = SpinBox(8, 512, init=8, func=self.update_image)
         self.height_s = SpinBox(16, 32727, init=1300, func=self.update_image)
@@ -203,7 +203,7 @@ class HexImg(QMainWindow):
 
     def select_palette(self, event):
         width = 16
-        scale = 24
+        scale = self.palette_scale.value()
         row = event.pos().y() // scale
         for i in range(width):
             color = QColor.fromRgb(self.palette_qimage.pixel(i, row))
@@ -283,9 +283,11 @@ class HexImg(QMainWindow):
         width = int(self.width_s.value())
         width = -(-width // 8)*8  # TODO: Restrict this quantisation to SNES mode
         # Maximum height for QPixmap is 32,767
-        height_1 = -(-px_length // width)  # Reverse floor division for ceil
-        self.image_columns = -(-(height_1 * scale) // int(self.height_s.value()))
-        height = -(-height_1 // self.image_columns)
+        height_overall = -(-px_length // width)  # Reverse floor division for ceil
+        height_overall_tiles = (height_overall // 8)
+        #self.image_columns = -(-(height_overall * scale) // int(self.height_s.value()))
+        self.image_columns = -(-(height_overall_tiles * scale) // (self.height_s.value()//8))
+        height = (-(-height_overall_tiles // self.image_columns)) * 8
         col_length = height * width // px_per_byte  # -(-length // columns)
 
         self.image_qimages = []
