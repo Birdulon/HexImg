@@ -118,7 +118,7 @@ class HexImg(QMainWindow):
 
         self.address_offset = SpinBox(0, 1000000000, step=64, func=self.update_image)
         self.address_fine_offset = SpinBox(0, 1023, func=self.update_image)
-        self.image_length = SpinBox(16, 16384, init=5840, step=16, func=self.update_image)
+        self.image_length = SpinBox(16, 16384, init=1024, step=16, func=self.update_image)
         self.scale = SpinBox(1, 32, init=8, step=1, func=self.update_image_lite)
         self.width_s = SpinBox(8, 512, init=8, func=self.update_image)
         self.height_s = SpinBox(16, 32727, init=1300, func=self.update_image)
@@ -297,7 +297,7 @@ class HexImg(QMainWindow):
             widget.setParent(None)
 
         for col in range(self.image_columns):
-            byterange = range(offset + col*col_length, min(offset + (col+1)*col_length, len(self.ROM)))
+            byterange = range(offset + col*col_length, min(offset + (col+1)*col_length, len(self.ROM)), 32)
             qimage = self._create_image_snes(width, height, byterange, px_per_byte, bx, bxm)
             self.image_qimages.append(qimage)
             pixmap = QtGui.QPixmap.fromImage(qimage)
@@ -356,34 +356,31 @@ class HexImg(QMainWindow):
         planes = bx
 
         ptr = 0
-        ppass = 0
-        passes = planes * 8
+        x_tile = 0
         tile = array('B', range(64))
-        t_ptr = 0
+        # i now has a 32 step size
         for i in byterange:
-            plane = int((ppass//16)*2 + (ppass % 2))
-            print("Plane: %i, Row: %i" % (plane, t_ptr//8))
-            byte = self.ROM[i]
-            if plane == 0:
-                for j in reversed(range(8)):
-                    tile[t_ptr] = byte >> j & 1
+            bytes = self.ROM[i:i+32]
+            t_ptr = 0
+            for j in range(0, 16, 2):
+                for x in reversed(range(8)):
+                    tile[t_ptr] = bytes[j] >> x & 1 \
+                                  | ((bytes[j+1] >> x & 1) << 1) \
+                                  | ((bytes[j+16] >> x & 1) << 2) \
+                                  | ((bytes[j+17] >> x & 1) << 3)
                     t_ptr += 1
+            if width == 8:
+                #print("Size of tile: %i" % len(tile))
+                ucharptr[ptr:ptr+64] = tile  # struct.pack('B', tile)
+                ptr += 64
             else:
-                for j in reversed(range(8)):
-                    tile[t_ptr] = (byte >> j & 2**plane) | tile[t_ptr]
-                    t_ptr += 1
-            ppass += 1
-            if ppass % 2:   # in odd planes, go back to start of row
-                t_ptr -= 8
-            if t_ptr > 63:  # after traversing full tile, reset
-                t_ptr = 0
-            if ppass >= passes:  # go to next tile
-                ppass = 0
-                if width == 8:
-                    ucharptr[ptr:ptr+64] = tile  # struct.pack('B', tile)
-                else:
-                    for i in range(8):
-                        ucharptr[ptr+i*width:ptr+8+i*width] = tile[i*8:(i+1)*8]
+                for y in range(8):
+                    ucharptr[ptr+(y*width):ptr+(y*width)+8] = tile[y*8:(y+1)*8]
+                ptr += 8  # move along one tile's width
+                x_tile += 1
+                if x_tile >= width//8:
+                    ptr += width*7  # move to the start of the next row
+                    x_tile = 0
         return img
 
     def s_color_picker(self, key):
