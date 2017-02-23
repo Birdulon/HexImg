@@ -57,7 +57,8 @@ if pyqt_version is 0:
             QDialogButtonBox, QFileDialog, QInputDialog,
             QMessageBox, QAction, QActionGroup,
             QLabel, QMenu, QStyle,
-            QSystemTrayIcon, QIcon, QPalette, QColor
+            QSystemTrayIcon, QIcon, QPalette, QColor,
+            QValidator
         )
         from PyQt4.QtGui import QStyleOptionProgressBarV2 as QStyleOptionProgressBar
         pyqt_version = 4
@@ -98,6 +99,8 @@ class HexImg(QMainWindow):
                             QColor(  0,  0, 64),
                             QColor(255,255,  0),
                             QColor(  0,255,255)]
+        for i in range(16, 256):
+            self.col_palette.append(QColor(i, i, i))
 
         self.setWindowTitle('HexImg')
 
@@ -120,13 +123,13 @@ class HexImg(QMainWindow):
         pal_area_layout.setSpacing(16)
         pal_area_layout.setContentsMargins(0, 0, 0, 0)
         self.palette_area.setLayout(pal_area_layout)
-        self.palette_area.mousePressEvent = self.select_palette
+        self.palette_area.mousePressEvent = self.palette_viewer_clicked
 
         self.palette_scroller = QScrollArea()
         self.palette_scroller.setWidget(self.palette_area)
 
-        self.address_offset = SpinBox(0, 1000000000, init=1179648, step=64, func=self.update_image)
-        self.address_fine_offset = SpinBox(0, 1023, func=self.update_image)
+        self.address_offset = HexSpinBox(0, 1000000000, init=1179648, step=64, func=self.update_image)
+        self.address_fine_offset = HexSpinBox(0, 1023, func=self.update_image)
         self.image_length = SpinBox(16, 65536, init=1024, step=16, func=self.update_image)
         self.scale = SpinBox(1, 32, init=8, step=1, func=self.update_image_lite)
         self.width_s = SpinBox(8, 512, init=8, func=self.update_image)
@@ -150,13 +153,13 @@ class HexImg(QMainWindow):
         self.format.setCurrentIndex(8)
         self.format.currentIndexChanged.connect(self.update_image)
 
-        self.palette_offset = SpinBox(0, 1000000000, init=1352640, step=32, func=self.update_palette_viewer)
-        self.palette_fine_offset = SpinBox(0, 31, func=self.update_palette_viewer)
+        self.palette_offset = HexSpinBox(0, 1000000000, init=1352640, step=32, func=self.update_palette_viewer)
+        self.palette_fine_offset = HexSpinBox(0, 31, func=self.update_palette_viewer)
         self.palette_length = SpinBox(0, 16384, init=4096, step=32, func=self.update_palette_viewer)
         self.palette_scale = SpinBox(2, 32, init=8, func=self.update_palette_viewer)
         self.palette_scroller.setMinimumWidth(16*self.palette_scale.value() + 20)
         self.palette_scroller.setMaximumWidth(16*self.palette_scale.value() + 20)
-        self.palette_selection = SpinBox(0, 1000000000, init=0, step=32, func=self.update_palette_viewer)
+        self.palette_selection = HexSpinBox(0, 1000000000, init=0, step=32, func=self.update_palette_selection)
 
         self.endian = QCheckBox()
         self.endian.stateChanged.connect(self.update_image)
@@ -182,17 +185,19 @@ class HexImg(QMainWindow):
         palette_settings_form.addRow('Offset', self.palette_fine_offset)
         palette_settings_form.addRow('Length', self.palette_length)
         palette_settings_form.addRow('Scale', self.palette_scale)
+        palette_settings_form.addRow('Selected', self.palette_selection)
         palette_settings.setLayout(palette_settings_form)
 
         colorbox = QGridLayout()
+        colorbox.setSpacing(0)
         self.colors = []
         for i in range(len(self.col_palette)):
             self.colors.append(QPushButton())
             self.colors[-1].setStyleSheet('background-color: ' + self.col_palette[i].name())
             self.colors[-1].setFocusPolicy(QtCore.Qt.NoFocus)
-            self.colors[-1].setMaximumSize(16, 16)
+            self.colors[-1].setMaximumSize(12, 16)
             self.colors[-1].clicked.connect(self.s_color_picker(i))
-            colorbox.addWidget(self.colors[-1], i//8, i % 8, 1, 1)
+            colorbox.addWidget(self.colors[-1], i//16, i % 16, 1, 1)
 
         btn_load = QPushButton('Load ROM')
         btn_load.clicked.connect(self.load_file)
@@ -224,13 +229,20 @@ class HexImg(QMainWindow):
         self.update_image()
         self.update_palette_viewer()
 
-    def select_palette(self, event):
-        width = 16
+    def palette_viewer_clicked(self, event):
         scale = self.palette_scale.value()
         row = event.pos().y() // scale
-        for i in range(width):
-            color = QColor.fromRgb(self.palette_qimage.pixel(i, row))
-            self.update_color(i, color)
+        self.palette_selection.setValue(self.palette_offset.value()+self.palette_fine_offset.value()+row*32)
+
+    def update_palette_selection(self):
+        start = self.palette_selection.value()
+        viewer = self.palette_offset.value()+self.palette_fine_offset.value()
+        width = 16
+        if start in range(viewer, viewer+self.palette_length.value()-512):
+            row = (start - viewer)//32
+            for i in range(256):
+                color = QColor.fromRgb(self.palette_qimage.pixel(i % width, row + (i//width)))
+                self.update_color(i, color)
         self.update_image_lite()
 
     def update_palette_viewer(self):
@@ -489,6 +501,49 @@ class HexImg(QMainWindow):
     def update_color(self, key, color):
         self.col_palette[key] = color
         self.colors[key].setStyleSheet('background-color: ' + color.name())
+
+
+class HexSpinBox(QSpinBox):
+    def __init__(self, min=0, max=99, init=0, step=1, func=None):
+        super().__init__()
+        self.setRange(min, max)
+        self.setValue(init)
+        self.setSingleStep(step)
+        self.valueChanged.connect(func)
+        self.setButtonSymbols(QtGui.QAbstractSpinBox.PlusMinus)
+
+    def valueFromText(self, text):
+        if text[:2] == '0x':
+            return int(text[2:], 16)
+        else:
+            return int(text)
+
+    def validate(self, input, pos):
+        if input == '':
+            return QValidator.Intermediate, input, pos
+        if input[0].lower() == 'x':
+            input = '0' + input
+            pos += 1
+        if input[:2] == '0x':
+            hex = input[2:]
+            if hex == '':
+                return QValidator.Intermediate, input, pos
+            try:
+                i = int(hex, 16)
+                input = '0x' + input[2:].upper()
+                return QValidator.Acceptable, input, pos
+            except:
+                pass
+        else:
+            try:
+                i = int(input)
+                return QValidator.Acceptable, input, pos
+            except:
+                pass
+        return QValidator.Invalid, input, pos
+
+    def textFromValue(self, v):
+        return '0x{:02X}'.format(v)
 
 
 def SpinBox(min=0, max=99, init=0, step=1, func=None):
