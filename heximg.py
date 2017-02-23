@@ -5,6 +5,7 @@ No license for now
 import sys
 import os
 import struct
+from array import array
 
 pyqt_version = 0
 skip_pyqt5 = True  # "PYQT4" in os.environ
@@ -60,7 +61,10 @@ if pyqt_version is 0:
               "Make sure you installed the PyQt4 package.")
         sys.exit(-1)
 
-from array import array
+
+def divceil(numerator, denominator):
+    # Reverse floor division for ceil
+    return -(-numerator // denominator)
 
 
 class HexImg(QMainWindow):
@@ -116,23 +120,34 @@ class HexImg(QMainWindow):
         self.palette_scroller = QScrollArea()
         self.palette_scroller.setWidget(self.palette_area)
 
-        self.address_offset = SpinBox(0, 1000000000, step=64, func=self.update_image)
+        self.address_offset = SpinBox(0, 1000000000, init=1179648, step=64, func=self.update_image)
         self.address_fine_offset = SpinBox(0, 1023, func=self.update_image)
         self.image_length = SpinBox(16, 65536, init=1024, step=16, func=self.update_image)
         self.scale = SpinBox(1, 32, init=8, step=1, func=self.update_image_lite)
         self.width_s = SpinBox(8, 512, init=8, func=self.update_image)
         self.height_s = SpinBox(16, 32727, init=1300, func=self.update_image)
 
-        self.pixel_size = QComboBox()
-        for i in [1, 2, 4]:
-            self.pixel_size.addItem(str(i))
-        self.pixel_size.setCurrentIndex(2)
-        self.pixel_size.currentIndexChanged.connect(self.update_image)
+        # List out formats in (name, bpp, tiled, linear)
+        self.formats = [('1bpp',       1, False, True),
+                        ('2bpp',       2, False, True),
+                        ('4bpp',       4, False, True),
+                        ('8bpp',       8, False, True),
+                        ('NES 2bpp',   2, True,  True),  # TODO
+                        ('SNES 2bpp',  2, True, False),
+                        ('SNES 3bpp',  3, True, False),
+                        ('SNES 4bpp',  4, True, False),
+                        ('SNES 8bpp',  8, True, False),
+                        ('SNES Mode7', 8, True,  True)]  # TODO
+
+        self.format = QComboBox()
+        self.format.addItems([x[0] for x in self.formats])
+        self.format.setCurrentIndex(7)
+        self.format.currentIndexChanged.connect(self.update_image)
 
         self.palette_offset = SpinBox(0, 1000000000, init=1352640, step=32, func=self.update_palette_viewer)
         self.palette_fine_offset = SpinBox(0, 31, func=self.update_palette_viewer)
         self.palette_length = SpinBox(0, 16384, init=4096, step=32, func=self.update_palette_viewer)
-        self.palette_scale = SpinBox(2, 32, init=16, func=self.update_palette_viewer)
+        self.palette_scale = SpinBox(2, 32, init=8, func=self.update_palette_viewer)
         self.palette_scroller.setMinimumWidth(16*self.palette_scale.value() + 20)
         self.palette_scroller.setMaximumWidth(16*self.palette_scale.value() + 20)
 
@@ -150,7 +165,7 @@ class HexImg(QMainWindow):
         image_settings_form.addRow('Length', self.image_length)
         image_settings_form.addRow('Width', self.width_s)
         image_settings_form.addRow('Height', self.height_s)
-        image_settings_form.addRow('Color bits', self.pixel_size)
+        image_settings_form.addRow('Format', self.format)
         image_settings_form.addRow('Scale', self.scale)
         image_settings_form.addRow('Flip endian', self.endian)
         self.image_settings.setLayout(image_settings_form)
@@ -272,24 +287,23 @@ class HexImg(QMainWindow):
         if not self.ROM or len(self.ROM) < 1:
             return
 
-        px_per_byte = 8//int(self.pixel_size.currentText())
-        bx = 8//px_per_byte   # Bits per px
-        bxm = int(2**(bx)-1)  # Bitmask form
+        format = self.formats[self.format.currentIndex()]
+        bpp = format[1]
         offset = int(self.address_offset.value()+self.address_fine_offset.value())
-
         scale = int(self.scale.value())
         length = min(len(self.ROM) - offset, int(self.image_length.value()))
-        px_length = px_per_byte * length
+        px_length = divceil(length*8, bpp)
         width = int(self.width_s.value())
-        width = -(-width // 8)*8  # TODO: Restrict this quantisation to SNES mode
+        if format[2]:  # Quantize width for tiled formats
+            width = divceil(width, 8)*8
         # Maximum height for QPixmap is 32,767
-        height_overall = -(-px_length // width)  # Reverse floor division for ceil
+        height_overall = divceil(px_length, width)
         height_overall_tiles = (height_overall // 8)
-        #self.image_columns = -(-(height_overall * scale) // int(self.height_s.value()))
-        self.image_columns = -(-(height_overall_tiles * scale) // (self.height_s.value()//8))
-        height = (-(-height_overall_tiles // self.image_columns)) * 8
-        col_length = height * width // px_per_byte  # -(-length // columns)
-
+        #self.image_columns = divceil(height_overall * scale, int(self.height_s.value()))
+        self.image_columns = divceil(height_overall_tiles * scale, self.height_s.value()//8)
+        height = divceil(height_overall_tiles, self.image_columns) * 8
+        #col_length = height * width // px_per_byte  # divceil(length, columns)
+        col_length = (height * width * bpp) // 8
         self.image_qimages = []
 
         layout = self.image_area.layout()
@@ -299,8 +313,8 @@ class HexImg(QMainWindow):
             widget.setParent(None)
 
         for col in range(self.image_columns):
-            byterange = range(offset + col*col_length, min(offset + (col+1)*col_length, len(self.ROM)), 32)
-            qimage = self._create_image_snes(width, height, byterange, px_per_byte, bx, bxm)
+            byterange = range(offset + col*col_length, min(offset + (col+1)*col_length, len(self.ROM)))
+            qimage = self.create_image(format, width, height, byterange)
             self.image_qimages.append(qimage)
             pixmap = QtGui.QPixmap.fromImage(qimage)
             pixmap_scaled = pixmap.scaled(pixmap.size() * scale)
@@ -311,79 +325,87 @@ class HexImg(QMainWindow):
 
         self.address_offset.setSingleStep(2*width)
 
-    def _create_image(self, width, height, byterange, px_per_byte, bx, bxm):
+    def create_image(self, format, width, height, byterange):
+        bpp = format[1]  # Bits per px
         img = QtGui.QImage(width, height, QtGui.QImage.Format_Indexed8)
         img.setColorTable([c.rgba() for c in self.col_palette])
-        ucharptr = img.bits()
-        ucharptr.setsize(img.byteCount())
-
-        ptr = 0
-        if self.endian.isChecked():
-            for i in byterange:
-                # Need to read part of each byte depending on palette size
-                #print(i)
-                byte = self.ROM[i]
-                for j in range(px_per_byte):
-                    offset = j*bx
-                    bits = byte >> offset & bxm
-                    ucharptr[ptr] = struct.pack('B', bits)
-                    ptr += 1
+        imgbits = img.bits()
+        imgbits.setsize(img.byteCount())
+        if not format[2]:  # Non-tiled format
+            self._create_image_linear(imgbits, byterange, bpp)
         else:
-            for i in byterange:
-                # Need to read part of each byte depending on palette size
-                #print(i)
-                byte = self.ROM[i]
-                for j in reversed(range(px_per_byte)):
-                    offset = j*bx
-                    bits = byte >> offset & bxm
-                    ucharptr[ptr] = struct.pack('B', bits)
-                    ptr += 1
+            self._create_image_snes(imgbits, width, byterange, bpp)
         return img
 
-    def _create_image_snes(self, width, height, byterange, px_per_byte, bx, bxm):
-        # Graphics are stored in 8x8 tiles
-        # Colour bits are segregated by "plane"
-        # Bytes 0,2,4,6,8,10,12,14 contain plane 0 (LSB of each pixel?)
-        # Bytes 1,3,5,7,9,11,13,15 contain plane 1
-        # Bytes 16,18,...,30 make up plane 2
-        # Bytes 17,19,...,31 make up plane 3
-        # Bytes 32,34,...,46 plane 4
-        # Bytes 33,35,...,47 plane 5
-        # Bytes 48,50,...,62 plane 6
-        # Bytes 49,51,...,63 plane 7 (MSB of each pixel?)
-        img = QtGui.QImage(width, height, QtGui.QImage.Format_Indexed8)
-        img.setColorTable([c.rgba() for c in self.col_palette])
-        ucharptr = img.bits()
-        ucharptr.setsize(img.byteCount())
-        planes = bx
+    def _create_image_linear(self, imgbits, byterange, bpp):
+        mask = int(2**(bpp)-1)  # Bitmask form
+        bitrange = range(8//bpp)
+        if not self.endian.isChecked():
+            bitrange = reversed(bitrange)
+        ptr = 0
+        for i in byterange:
+            byte = self.ROM[i]
+            for j in bitrange:
+                offset = j*bpp
+                bits = byte >> offset & mask
+                imgbits[ptr] = struct.pack('B', bits)
+                ptr += 1
 
+    def _create_image_snes(self, imgbits, width, byterange, planes):
+        '''
+        Graphics are stored in 8x8 tiles
+        Colour bits are segregated by "plane"
+        Bytes 0,2,4,6,8,10,12,14 contain plane 0 (LSB of each pixel?)
+        Bytes 1,3,5,7,9,11,13,15 contain plane 1
+        Bytes 16,18,...,30 make up plane 2
+        Bytes 17,19,...,31 make up plane 3
+        Bytes 32,34,...,46 plane 4
+        Bytes 33,35,...,47 plane 5
+        Bytes 48,50,...,62 plane 6
+        Bytes 49,51,...,63 plane 7 (MSB of each pixel?)
+        '''
+        bytes_per_tile = planes*8
         ptr = 0
         x_tile = 0
         tile = array('B', range(64))
         # i now has a 32 step size
-        for i in byterange:
-            bytes = self.ROM[i:i+32]
+        for i in range(byterange.start, byterange.stop, bytes_per_tile):
+            bytes = self.ROM[i:i+bytes_per_tile]
             t_ptr = 0
             for j in range(0, 16, 2):
                 for x in reversed(range(8)):
-                    tile[t_ptr] = bytes[j] >> x & 1 \
-                                  | ((bytes[j+1] >> x & 1) << 1) \
-                                  | ((bytes[j+16] >> x & 1) << 2) \
-                                  | ((bytes[j+17] >> x & 1) << 3)
+                    tile[t_ptr] = (bytes[j] >> x & 1) | ((bytes[j+1] >> x & 1) << 1)
                     t_ptr += 1
+            t_ptr = 0
+            if planes == 3:
+                for j in range(16, 24, 1):
+                    for x in reversed(range(8)):
+                        tile[t_ptr] |= ((bytes[j] >> x & 1) << 2)
+                        t_ptr += 1
+            elif planes >= 4:
+                for j in range(16, 32, 2):
+                    for x in reversed(range(8)):
+                        tile[t_ptr] |= ((bytes[j] >> x & 1) << 2) | ((bytes[j+1] >> x & 1) << 3)
+                        t_ptr += 1
+            if planes == 8:
+                t_ptr = 0
+                for j in range(32, 48, 2):
+                    for x in reversed(range(8)):
+                        tile[t_ptr] |= ((bytes[j] >> x & 1) << 4) | ((bytes[j+1] >> x & 1) << 5) \
+                            | ((bytes[j+16] >> x & 1) << 6) | ((bytes[j+17] >> x & 1) << 7)
+                        t_ptr += 1
+
             if width == 8:
-                #print("Size of tile: %i" % len(tile))
-                ucharptr[ptr:ptr+64] = tile  # struct.pack('B', tile)
+                imgbits[ptr:ptr+64] = tile  # struct.pack('B', tile)
                 ptr += 64
             else:
                 for y in range(8):
-                    ucharptr[ptr+(y*width):ptr+(y*width)+8] = tile[y*8:(y+1)*8]
+                    imgbits[ptr+(y*width):ptr+(y*width)+8] = tile[y*8:y*8+8]
                 ptr += 8  # move along one tile's width
                 x_tile += 1
                 if x_tile >= width//8:
                     ptr += width*7  # move to the start of the next row
                     x_tile = 0
-        return img
 
     def s_color_picker(self, key):
         return lambda: self.color_picker(key)
