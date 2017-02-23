@@ -273,11 +273,14 @@ class HexImg(QMainWindow):
         ptr = 0
         for i in range(offset, offset+length, 2):
             # Need to convert BGR555 to RGB555
-            short = struct.unpack('<H', self.ROM[i:i+2])[0]
-            red = short & 0x1F
-            blue = (short >> 10) & 0x1F
-            green5 = short & 0x3E0
-            bits = (red << 10) | green5 | blue
+            if (i+2) < len(self.ROM):
+                short = struct.unpack('<H', self.ROM[i:i+2])[0]
+                red = short & 0x1F
+                blue = (short >> 10) & 0x1F
+                green5 = short & 0x3E0
+                bits = (red << 10) | green5 | blue
+            else:
+                bits = 0
             ucharptr[ptr:ptr+2] = struct.pack('H', bits)
             ptr += 2
         return img
